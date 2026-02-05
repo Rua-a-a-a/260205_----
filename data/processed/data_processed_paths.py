@@ -13,7 +13,7 @@ from pathlib import Path
 CHLA_DAILY_FUSION_DIR = Path("/data_new/chla_data_imputation_data_260125/chla_data_pretraining/daily_fusion_target_modified/")
 
 # SST 时间加权对齐数据 南海区域
-SST_WEIGHTED_ALIGNED_DIR = Path("/data_new/chla_data_imputation_data_260125/SST/jaxa_weighted_aligned/")
+SST_WEIGHTED_ALIGNED_DIR = Path("/data_new/chla_data_imputation_data_260125/chla_data_pretraining/sst_daily_fusion_target/")
 
 # ============ 路径验证函数 ============
 

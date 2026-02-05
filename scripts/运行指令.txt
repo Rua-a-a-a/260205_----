@@ -1,0 +1,7 @@
+处理2016-2024年全年 
+python preprocessing/sst_cut_and_change_grid.py --year_start 2016 --year_end 2024 --num_workers 16
+
+处理2016-2024年全年                                                                             
+python preprocessing/sst_hourly_to_daily_fusion.py --year_start 2016 --year_end 2024 --num_workers 16
+
+python visualization/visualize_sst_target.py
