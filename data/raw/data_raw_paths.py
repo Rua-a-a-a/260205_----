@@ -13,7 +13,7 @@ from pathlib import Path
 CHLA_HOURLY_DIR = Path("/data_new/renamed_data/chla_nc_after_rename/chla/R/")
 
 # 海温 (sea surface temperature) 小时数据
-SST_HOURLY_DIR = Path("/data/sst_data/sst_missing_value_imputation/jaxa_data/jaxa_extract_L3/")
+SST_HOURLY_DIR = Path("/data_new/sst_data/sst_missing_value_imputation/jaxa_data/jaxa_extract_L3/")
 
 # ============ 路径验证函数 ============
 
