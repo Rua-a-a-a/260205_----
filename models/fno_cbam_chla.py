@@ -84,24 +84,81 @@ class CBAM_Block(nn.Module):
         return x
 
 
+class FeatureEngineering(nn.Module):
+    """
+    Feature Engineering Module
+    Computes:
+    1. sst_anom: SST Anomaly (SST - temporal mean)
+    2. |∇sst|: SST Gradient Magnitude
+    3. Δsst: SST Laplacian
+    """
+    def __init__(self):
+        super(FeatureEngineering, self).__init__()
+        # Sobel kernels
+        self.register_buffer('sobel_x', torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).view(1, 1, 3, 3))
+        self.register_buffer('sobel_y', torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32).view(1, 1, 3, 3))
+        # Laplacian kernel
+        self.register_buffer('laplacian', torch.tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=torch.float32).view(1, 1, 3, 3))
+
+    def forward(self, sst):
+        """
+        Args:
+            sst: [B, T, H, W]
+        Returns:
+            sst_anom, sst_grad, sst_lap (all [B, T, H, W])
+        """
+        B, T, H, W = sst.shape
+        # Reshape to apply 2D conv to each time step
+        sst_reshaped = sst.view(B * T, 1, H, W)
+
+        # Gradient
+        grad_x = F.conv2d(sst_reshaped, self.sobel_x, padding=1)
+        grad_y = F.conv2d(sst_reshaped, self.sobel_y, padding=1)
+        sst_grad = torch.sqrt(grad_x**2 + grad_y**2).view(B, T, H, W)
+
+        # Laplacian
+        sst_lap = F.conv2d(sst_reshaped, self.laplacian, padding=1).view(B, T, H, W)
+
+        # Anomaly: Subtract sliding window mean (temporal mean)
+        # Represents deviation from the 30-day average state
+        sst_mean = sst.mean(dim=1, keepdim=True)
+        sst_anom = sst - sst_mean
+
+        return sst_anom, sst_grad, sst_lap
+
+
 class FNO_CBAM_Chla(nn.Module):
     """
-    FNO with CBAM for Chla reconstruction
+    FNO with CBAM for Chla reconstruction with Multi-source Input
 
-    输入：60通道 concat(30天Chla_filled, 30天mask) [B, 60, H, W]
-    输出：1通道 (第30天重建Chla) [B, 1, H, W]
+    Input: [B, 152, H, W] (Default assumption)
+      - 00-29: SST (30)
+      - 30-59: Chl-a (30)
+      - 60-89: Mask (30)
+      - 90-90: Lat (1)
+      - 91-91: Lon (1)
+      - 92-121: Day Sin (30)
+      - 122-151: Day Cos (30)
 
-    动态尺寸支持，使用GroupNorm代替LayerNorm
+    Feature Engineering adds 90 channels:
+      - sst_anom (30)
+      - sst_grad (30)
+      - sst_lap (30)
+
+    Total Internal Channels: 152 + 90 = 242
+
+    Output: [B, 1, H, W] (Reconstructed Chla at last step)
     """
     def __init__(
         self,
-        in_channels=60,
+        in_channels=152,
         out_channels=1,
         modes1=36,
         modes2=28,
         width=64,
         depth=6,
         cbam_reduction_ratio=16,
+        sst_channels=30,
     ):
         super(FNO_CBAM_Chla, self).__init__()
 
@@ -111,19 +168,20 @@ class FNO_CBAM_Chla(nn.Module):
         self.modes2 = modes2
         self.width = width
         self.depth = depth
+        self.sst_channels = sst_channels
 
-        # 输入编码：分别编码数值和掩码
-        self.value_encoder = nn.Sequential(
-            nn.Conv2d(30, width // 2, kernel_size=1),
+        # Feature Engineering Module
+        self.feature_eng = FeatureEngineering()
+
+        # Calculate total input channels after feature engineering
+        # 3 derived features per SST channel
+        self.aug_channels = in_channels + sst_channels * 3
+
+        # Input Projection (Unified)
+        self.input_proj = nn.Sequential(
+            nn.Conv2d(self.aug_channels, width, kernel_size=1),
             nn.GELU(),
         )
-        self.mask_encoder = nn.Sequential(
-            nn.Conv2d(30, width // 2, kernel_size=1),
-            nn.GELU(),
-        )
-
-        # 融合层
-        self.fusion = nn.Conv2d(width, width, kernel_size=1)
 
         # FNO层
         self.convs = nn.ModuleList()
@@ -148,24 +206,23 @@ class FNO_CBAM_Chla(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: [B, 60, H, W] - concat(30天数值, 30天掩码)
+            x: [B, 152, H, W] - Combined features
 
         Returns:
             pred: [B, 1, H, W] - 第30天的重建值
         """
-        B, C, H, W = x.shape
+        # Extract SST for feature engineering
+        # Assumption: SST is at the beginning [0:30]
+        sst = x[:, :self.sst_channels, :, :]
 
-        # 分离数值和掩码
-        values = x[:, :30, :, :]  # [B, 30, H, W]
-        masks = x[:, 30:, :, :]   # [B, 30, H, W]
+        # Compute derived features
+        sst_anom, sst_grad, sst_lap = self.feature_eng(sst)
 
-        # 分别编码
-        value_feat = self.value_encoder(values)   # [B, width//2, H, W]
-        mask_feat = self.mask_encoder(masks)      # [B, width//2, H, W]
+        # Concatenate all features
+        x_aug = torch.cat([x, sst_anom, sst_grad, sst_lap], dim=1)
 
-        # 融合
-        x = torch.cat([value_feat, mask_feat], dim=1)  # [B, width, H, W]
-        x = self.fusion(x)
+        # Project to hidden dim
+        x = self.input_proj(x_aug)
 
         # FNO处理
         for i in range(self.depth):
@@ -186,9 +243,6 @@ class FNO_CBAM_Chla(nn.Module):
 
         return pred
 
-
-# 保持向后兼容的别名
-FNO_CBAM_SST_Temporal = FNO_CBAM_Chla
 
 
 def count_parameters(model):

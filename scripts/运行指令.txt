@@ -1,7 +1,10 @@
-处理2016-2024年全年 
+处理2016-2024年全年
 python preprocessing/sst_cut_and_change_grid.py --year_start 2016 --year_end 2024 --num_workers 16
 
-处理2016-2024年全年                                                                             
+处理2016-2024年全年
 python preprocessing/sst_hourly_to_daily_fusion.py --year_start 2016 --year_end 2024 --num_workers 16
 
 python visualization/visualize_sst_target.py
+
+# 批量生成2016-2024年SST时间加权填充数据（固定UTC 4点）
+python preprocessing/sst_temporal_weighted_fill.py --mode batch --year_start 2016 --year_end 2024 --utc_hour 4 --workers 216
